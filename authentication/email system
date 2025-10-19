@@ -1,0 +1,405 @@
+urls
+
+# additional endpoints
+    path('password-reset/', RequestPasswordResetView.as_view(), name='password_reset'),
+    path('password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
+    # Then add these routes to urlpatterns:
+    # Password reset
+    path('password-reset/', RequestPasswordResetView.as_view(), name='password_reset'),
+    path('password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
+
+    # Email verification
+    path('email-verify/', VerifyEmailView.as_view(), name='email_verify'),
+    path('resend-verification/', ResendVerificationView.as_view(), name='resend_verification'),
+
+
+modells
+"""
+User and Authentication Models
+Custom user model with role-based access control
+"""
+
+from django.contrib.auth.models import AbstractUser
+from django.db import models
+from django.utils.translation import gettext_lazy as _
+
+
+class User(AbstractUser):
+    """
+    Custom User Model with extended fields for church management
+    """
+    
+    class Role(models.TextChoices):
+        """User roles in the system"""
+        SUPER_ADMIN = 'super_admin', _('Super Admin')
+        DENOMINATION_ADMIN = 'denomination_admin', _('Denomination Admin')
+        CHURCH_ADMIN = 'church_admin', _('Church Admin')
+        MEMBER = 'member', _('Member')
+    
+    # Extended fields
+    email = models.EmailField(_('email address'), unique=True)
+    phone_number = models.CharField(_('phone number'), max_length=20, blank=True, null=True)
+    profile_image = models.ImageField(
+        _('profile image'),
+        upload_to='profiles/%Y/%m/',
+        blank=True,
+        null=True
+    )
+    
+    # Role and permissions
+    role = models.CharField(
+        _('role'),
+        max_length=20,
+        choices=Role.choices,
+        default=Role.MEMBER
+    )
+    
+    # Relationships
+    denomination = models.ForeignKey(
+        'denomination.Denomination',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='users',
+        verbose_name=_('denomination')
+    )
+    church_branch = models.ForeignKey(
+        'denomination.ChurchBranch',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='users',
+        verbose_name=_('church branch')
+    )
+    
+    # Account status
+    is_verified = models.BooleanField(_('verified'), default=False)
+    is_active = models.BooleanField(_('active'), default=True)
+    
+    # Timestamps
+    created_at = models.DateTimeField(_('created at'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('updated at'), auto_now=True)
+    
+    # Make email the primary login field
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = ['username', 'first_name', 'last_name']
+    
+    class Meta:
+        db_table = 'users'
+        verbose_name = _('user')
+        verbose_name_plural = _('users')
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.get_full_name()} ({self.email})"
+    
+    def get_full_name(self):
+        """Return user's full name"""
+        return f"{self.first_name} {self.last_name}".strip() or self.username
+    
+    def is_super_admin(self):
+        """Check if user is super admin"""
+        return self.role == self.Role.SUPER_ADMIN
+    
+    def is_denomination_admin(self):
+        """Check if user is denomination admin"""
+        return self.role == self.Role.DENOMINATION_ADMIN
+    
+    def is_church_admin(self):
+        """Check if user is church admin"""
+        return self.role == self.Role.CHURCH_ADMIN
+    
+    def is_admin(self):
+        """Check if user has any admin role"""
+        return self.role in [
+            self.Role.SUPER_ADMIN,
+            self.Role.DENOMINATION_ADMIN,
+            self.Role.CHURCH_ADMIN
+        ]
+
+
+class UserProfile(models.Model):
+    """
+    Extended user profile information
+    Separate model for additional user data
+    """
+    
+    class Gender(models.TextChoices):
+        MALE = 'male', _('Male')
+        FEMALE = 'female', _('Female')
+        OTHER = 'other', _('Other')
+    
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='profile'
+    )
+    
+    # Personal information
+    gender = models.CharField(
+        _('gender'),
+        max_length=10,
+        choices=Gender.choices,
+        blank=True,
+        null=True
+    )
+    date_of_birth = models.DateField(_('date of birth'), blank=True, null=True)
+    address = models.TextField(_('address'), blank=True)
+    city = models.CharField(_('city'), max_length=100, blank=True)
+    state = models.CharField(_('state'), max_length=100, blank=True)
+    country = models.CharField(_('country'), max_length=100, default='Nigeria')
+    
+    # Church information
+    department = models.CharField(_('department'), max_length=100, blank=True)
+    joined_date = models.DateField(_('date joined church'), blank=True, null=True)
+    
+    # Additional contact
+    emergency_contact_name = models.CharField(_('emergency contact name'), max_length=200, blank=True)
+    emergency_contact_phone = models.CharField(_('emergency contact phone'), max_length=20, blank=True)
+    
+    # Bio
+    bio = models.TextField(_('biography'), blank=True, max_length=500)
+    
+    # Timestamps
+    created_at = models.DateTimeField(_('created at'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('updated at'), auto_now=True)
+    
+    class Meta:
+        db_table = 'user_profiles'
+        verbose_name = _('user profile')
+        verbose_name_plural = _('user profiles')
+    
+    def __str__(self):
+        return f"Profile of {self.user.get_full_name()}"
+    
+    @property
+    def age(self):
+        """Calculate user's age"""
+        if self.date_of_birth:
+            from datetime import date
+            today = date.today()
+            return today.year - self.date_of_birth.year - (
+                (today.month, today.day) < (self.date_of_birth.month, self.date_of_birth.day)
+            )
+        return None
+
+
+
+views
+from rest_framework.views import APIView
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from django.core.mail import send_mail
+from django.conf import settings
+from .models import User
+from .serializers import (
+    RequestPasswordResetSerializer,
+    SetNewPasswordSerializer,
+    EmailVerifySerializer
+)
+
+token_generator = PasswordResetTokenGenerator()
+
+
+class RequestPasswordResetView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = RequestPasswordResetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+        # We do not reveal whether email exists; but we will send email only if user exists
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            # Return generic response so it's not obvious whether email exists
+            return Response({
+                "success": True,
+                "message": "If that email exists in our system, a password reset link has been sent."
+            }, status=status.HTTP_200_OK)
+
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = token_generator.make_token(user)
+
+        # Build the password reset link — you can change path if you prefer query params
+        # Example link: http://127.0.0.1:8000/api/auth/password-reset-confirm/?uid=...&token=...
+        reset_path = f"/api/auth/password-reset-confirm/?uid={uid}&token={token}"
+        reset_link = request.build_absolute_uri(reset_path)
+
+        # Simple email body (plain text)
+        subject = "Password reset for ChurchConnect"
+        message = (
+            f"Hello {user.get_full_name() or user.email},\n\n"
+            f"You requested a password reset. Click the link below to set a new password:\n\n"
+            f"{reset_link}\n\n"
+            "If you didn't request this, just ignore this email.\n\n"
+            "Thanks,\nChurchConnect team"
+        )
+        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@localhost")
+        try:
+            send_mail(subject, message, from_email, [user.email], fail_silently=False)
+        except Exception as e:
+            # If email fails, return an error; optionally you could still return success to avoid leaking info
+            return Response({
+                "success": False,
+                "message": "Failed to send password reset email.",
+                "error": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response({
+            "success": True,
+            "message": "If that email exists in our system, a password reset link has been sent."
+        }, status=status.HTTP_200_OK)
+
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = SetNewPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        uidb64 = serializer.validated_data['uid']
+        token = serializer.validated_data['token']
+        new_password = serializer.validated_data['new_password']
+
+        # Decode uid and get user
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(pk=uid)
+        except Exception:
+            return Response({
+                "success": False,
+                "message": "Invalid link or user."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check token
+        if not token_generator.check_token(user, token):
+            return Response({
+                "success": False,
+                "message": "Invalid or expired token."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Set new password
+        user.set_password(new_password)
+        user.save()
+
+        return Response({
+            "success": True,
+            "message": "Password has been reset successfully."
+        }, status=status.HTTP_200_OK)
+
+
+class VerifyEmailView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        # Accept uid and token as query params for simplicity
+        uidb64 = request.query_params.get('uid')
+        token = request.query_params.get('token')
+
+        if not uidb64 or not token:
+            return Response({"success": False, "message": "Missing parameters."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(pk=uid)
+        except Exception:
+            return Response({"success": False, "message": "Invalid link."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not token_generator.check_token(user, token):
+            return Response({"success": False, "message": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Mark as verified
+        user.is_verified = True
+        user.save()
+
+        return Response({"success": True, "message": "Email verified successfully."}, status=status.HTTP_200_OK)
+
+
+class ResendVerificationView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email', '').lower()
+        if not email:
+            return Response({"success": False, "message": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({"success": True, "message": "If that email exists, a verification email has been sent."}, status=status.HTTP_200_OK)
+
+        if user.is_verified:
+            return Response({"success": True, "message": "Account is already verified."}, status=status.HTTP_200_OK)
+
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = token_generator.make_token(user)
+        verify_path = f"/api/auth/email-verify/?uid={uid}&token={token}"
+        verify_link = request.build_absolute_uri(verify_path)
+
+        subject = "Verify your ChurchConnect email"
+        message = (
+            f"Hello {user.get_full_name() or user.email},\n\n"
+            f"Please verify your email by clicking the link below:\n\n"
+            f"{verify_link}\n\n"
+            "Thanks,\nChurchConnect team"
+        )
+        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@localhost")
+        try:
+            send_mail(subject, message, from_email, [user.email], fail_silently=False)
+        except Exception as e:
+            return Response({"success": False, "message": "Failed to send verification email.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response({"success": True, "message": "Verification email sent if the address exists."}, status=status.HTTP_200_OK)
+
+
+
+
+        serializer
+        from rest_framework import serializers
+from django.contrib.auth.password_validation import validate_password
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_decode
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from .models import User
+
+class RequestPasswordResetSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        # Just accept; view will handle whether the user exists or not
+        return value.lower()
+
+
+class SetNewPasswordSerializer(serializers.Serializer):
+    uid = serializers.CharField(write_only=True)
+    token = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, validators=[validate_password], style={'input_type': 'password'})
+    new_password_confirm = serializers.CharField(write_only=True, style={'input_type': 'password'})
+
+    def validate(self, attrs):
+        if attrs.get('new_password') != attrs.get('new_password_confirm'):
+            raise serializers.ValidationError({"new_password": "Password confirmation does not match."})
+        return attrs
+
+    def validate_uid(self, value):
+        try:
+            uid = force_str(urlsafe_base64_decode(value))
+            user = User.objects.get(pk=uid)
+        except Exception:
+            raise serializers.ValidationError("Invalid uid.")
+        return value
+
+    def validate_token(self, value):
+        # token validity checked in view where user object is available
+        return value
+
+
+class EmailVerifySerializer(serializers.Serializer):
+    uid = serializers.CharField(write_only=True)
+    token = serializers.CharField(write_only=True)
