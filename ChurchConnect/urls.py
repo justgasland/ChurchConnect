@@ -27,6 +27,9 @@ urlpatterns = [
     path('api/members/', include('members.urls')),
     path('api/events/', include('events.urls')),
     # path('api/donations/', include('donations.urls')),
+    path('api/media/', include('media.urls')),
+    path('api/community/', include('community.urls')),
+    path('api/notifications/', include('notification.urls')),
 ]
 
 if settings.DEBUG:
