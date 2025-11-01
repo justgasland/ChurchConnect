@@ -37,6 +37,11 @@ class GroupAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+    def member_count(self, obj):
+        """Calculates the number of members in the group."""
+        return obj.groupmember_set.count()
+
+    member_count.short_description = _('Members')
 
     def get_queryset(self, request):
         """Restrict to user's church/denomination"""

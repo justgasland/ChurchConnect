@@ -131,7 +131,7 @@ class UserLoginSerializer(serializers.Serializer):
         
         # Authenticate
         # user = authenticate(username=user.username, password=password)
-        user = authenticate(request=self.context.get('request'), email=email, password=password)
+        user = authenticate(request=self.context.get('request'), username=email, password=password)
 
         
         if not user:
